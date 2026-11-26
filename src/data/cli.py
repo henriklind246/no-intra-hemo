@@ -21,7 +21,7 @@ at the time limit, becomes a normal exit so the converter can remove its
 temporary directory.
 
 Run as ``aneug ...`` after ``pip install -e .``, or without installing as
-``python -m no_intra_hemo.data ...`` from the repo root (what scripts/msi/run.sh does).
+``python -m src.data ...`` from the repo root (what scripts/msi/run.sh does).
 """
 
 from __future__ import annotations

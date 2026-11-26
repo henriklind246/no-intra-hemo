@@ -1,4 +1,4 @@
-"""no_intra_hemo: neural operators for intracranial aneurysm hemodynamics.
+"""Neural operators for intracranial aneurysm hemodynamics (imported as ``src``).
 
 Learns transient blood-flow velocity and pressure fields in intracranial
 aneurysm geometries from the AneuG-Flow CFD dataset.

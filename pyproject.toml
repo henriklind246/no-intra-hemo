@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "no-intra-hemo"
+version = "0.1.0"
+description = "Neural operators for intracranial aneurysm hemodynamics (AneuG-Flow)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+# torch is only needed to read the raw AneuG-Flow .pt archives.
+raw = ["torch>=1.13"]
+dev = ["pytest>=7", "torch>=1.13"]
+
+[project.scripts]
+aneug = "src.data.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
