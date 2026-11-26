@@ -13,6 +13,13 @@ Processed (written by ``aneug convert``)::
                                  solution.npy      (T, N, 4)  float32, time-major
                                  metadata.json
 
+Geometry stage (written by ``aneug features`` into the same case directory)::
+
+    <case>/geometry_features.npy  (N, 5)  float32
+           wall_projection.npz    closest wall triangle + barycentric weights per point
+           wall/                  wall_mesh.npz and copies of the raw wall files
+           geometry.json          written last; marks the stage complete
+
 Every other module takes its names from here so they are defined once: the
 raw and processed file names, the coordinate and solution field names (and
 so the channel order of solution.npy), ``FORMAT_VERSION`` (stored in each
@@ -58,6 +65,19 @@ FAILURES_SUBDIR = "_failures"
 INDEX_FILE = "index.csv"
 RAW_MANIFEST_FILE = "raw_manifest.csv"
 
+# Geometry stage.
+WALL_DATA_FILE = "wall_data.pt"
+WALL_GRAPH_FILE = "wall_graph_static.pt"
+WALL_REGISTRATION_FILE = "wall_mesh_registration.pt"
+REQUIRED_FOR_FEATURES = (WALL_REGISTRATION_FILE, WALL_GRAPH_FILE, INLET_FILE)
+GEOMETRY_FEATURES_FILE = "geometry_features.npy"
+WALL_PROJECTION_FILE = "wall_projection.npz"
+WALL_SUBDIR = "wall"
+WALL_MESH_FILE = "wall_mesh.npz"
+GEOMETRY_METADATA_FILE = "geometry.json"
+# Bump when the geometry features or their files change incompatibly.
+GEOMETRY_VERSION = 1
+
 COORDINATE_FIELDS = ("x_coordinate", "y_coordinate", "z_coordinate")
 COORDINATE_CHANNELS = ("x", "y", "z")
 SOLUTION_FIELDS = ("x_velocity", "y_velocity", "z_velocity", "absolute_pressure")
@@ -92,5 +112,14 @@ def is_complete_case(case_dir: Path) -> bool:
     try:
         with open(case_dir / METADATA_FILE) as f:
             return json.load(f).get("format_version") == FORMAT_VERSION
+    except (OSError, ValueError):
+        return False
+
+
+def has_geometry(case_dir: Path) -> bool:
+    """True if ``aneug features`` finished for ``case_dir`` with the current version."""
+    try:
+        with open(case_dir / GEOMETRY_METADATA_FILE) as f:
+            return json.load(f).get("geometry_version") == GEOMETRY_VERSION
     except (OSError, ValueError):
         return False

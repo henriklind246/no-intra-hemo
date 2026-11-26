@@ -11,6 +11,11 @@ Commands:
              Completed cases are skipped; a failing case is recorded in
              _failures/ and the remaining cases still run
     verify   compare processed cases value-for-value with the raw data
+    features compute geometry_features.npy (wall distance and geodesic
+             distances through the fluid from the inlet, outlets and
+             aneurysm) for processed
+             cases, check the wall files, and keep copies of them; --all
+             means every processed case. Failures go to _failures/features/
     index    write index.csv and report complete, failed, incomplete and
              not-yet-processed cases
 
@@ -34,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import convert, layout, manifest, processed, raw
+from . import convert, geometry, layout, manifest, processed, raw
 
 log = logging.getLogger("aneug")
 
@@ -148,6 +153,32 @@ def cmd_verify(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_features(args) -> int:
+    raw_dir, out_dir = _paths(args)
+    if args.all and not args.cases_file:
+        args.cases = processed.list_cases(out_dir)
+        args.all = False
+    ids = _select_cases(args, raw_dir)
+    log.info("geometry features for %d case(s) in %s", len(ids), out_dir)
+    counts = {"computed": 0, "skipped": 0, "failed": 0}
+    for i, cid in enumerate(ids, 1):
+        try:
+            res = geometry.features_case(out_dir / cid, raw_dir / cid, overwrite=args.overwrite)
+        except Exception as exc:
+            counts["failed"] += 1
+            path = geometry.record_failure(out_dir, cid, exc)
+            log.error("[%d/%d] %s FAILED: %s: %s (details: %s)", i, len(ids), cid, type(exc).__name__, exc, path)
+            if args.fail_fast:
+                break
+            continue
+        geometry.clear_failure(out_dir, cid)
+        counts[res.status] += 1
+        extra = f" in {res.seconds:.1f}s, {res.num_warnings} warning(s)" if res.status == "computed" else ""
+        log.info("[%d/%d] %s %s%s", i, len(ids), cid, res.status, extra)
+    log.info("done: %s", counts)
+    return 1 if counts["failed"] else 0
+
+
 def cmd_index(args) -> int:
     raw_dir, out_dir = _paths(args)
     raw_ids = [d.name for d in raw.raw_case_dirs(raw_dir)] if raw_dir.is_dir() else None
@@ -155,8 +186,11 @@ def cmd_index(args) -> int:
     if "not_yet_processed" in summary and len(summary["not_yet_processed"]) > 20:
         n = len(summary["not_yet_processed"])
         summary["not_yet_processed"] = summary["not_yet_processed"][:20] + [f"... {n - 20} more"]
+    if len(summary["without_geometry"]) > 20:
+        n = len(summary["without_geometry"])
+        summary["without_geometry"] = summary["without_geometry"][:20] + [f"... {n - 20} more"]
     _print_json(summary)
-    return 1 if summary["failed"] else 0
+    return 1 if summary["failed"] or summary["geometry_failed"] else 0
 
 
 # --- parser ----------------------------------------------------------------
@@ -200,6 +234,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("verify", parents=[common, select], help="re-check processed cases against raw")
     s.set_defaults(func=cmd_verify)
+
+    s = sub.add_parser("features", parents=[common, select],
+                       help="geometry features (wall distance, volume geodesics) for processed cases")
+    s.add_argument("--overwrite", action="store_true", help="recompute cases that already have features")
+    s.add_argument("--fail-fast", action="store_true", help="stop at the first failing case")
+    s.set_defaults(func=cmd_features)
 
     s = sub.add_parser("index", parents=[common], help="write index.csv and report progress")
     s.set_defaults(func=cmd_index)

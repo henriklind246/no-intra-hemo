@@ -10,7 +10,7 @@
 # NOTE: /scratch.global is purged after 30 days and is not backed up.
 : "${ANEUG_ROOT:=/scratch.global/$USER/aneug_flow}"
 
-# Conda environment with python, numpy and torch.
+# Conda environment with python, numpy and torch (and scipy for `aneug features`).
 : "${CONDA_ENV:=tps}"
 # Module that provides `conda`, if it is not already on PATH (e.g. "conda").
 : "${CONDA_MODULE:=}"

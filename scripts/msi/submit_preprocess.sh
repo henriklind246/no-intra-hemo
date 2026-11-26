@@ -12,10 +12,18 @@
 #   scripts/msi/submit_preprocess.sh                  # every raw case
 #   scripts/msi/submit_preprocess.sh my_cases.txt     # a subset (one id per line, or a manifest CSV)
 #   scripts/msi/submit_preprocess.sh "" --overwrite   # extra args go to `aneug convert`
+#
+# STAGE=features runs `aneug features` instead (scripts/msi/submit_features.sh
+# does this); without a case file it then takes every processed case.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$REPO_DIR/scripts/msi/config.sh"
+STAGE="${STAGE:-convert}"
+case "$STAGE" in
+    convert|features) ;;
+    *) echo "STAGE must be convert or features, not '$STAGE'" >&2; exit 1 ;;
+esac
 
 CASES_ARG="${1:-}"
 shift || true
@@ -25,10 +33,14 @@ JOBS_DIR="$OUT_DIR/_jobs"
 LOG_DIR="$REPO_DIR/logs/slurm"
 mkdir -p "$JOBS_DIR" "$LOG_DIR"
 STAMP="$(date +%Y%m%dT%H%M%S)"
-CASES_FILE="$JOBS_DIR/cases_$STAMP.csv"
+CASES_FILE="$JOBS_DIR/${STAGE}_cases_$STAMP.csv"
 
 if [[ -n "$CASES_ARG" ]]; then
     cp "$CASES_ARG" "$CASES_FILE"
+elif [[ "$STAGE" == features ]]; then
+    # index.csv lists the complete processed cases.
+    "$REPO_DIR/scripts/msi/run.sh" index > /dev/null || true
+    cp "$OUT_DIR/index.csv" "$CASES_FILE"
 else
     "$REPO_DIR/scripts/msi/run.sh" scan --manifest "$CASES_FILE"
 fi
@@ -41,7 +53,7 @@ if [[ "$NUM_CASES" -eq 0 ]]; then
 fi
 SHARDS=$(( NUM_SHARDS < NUM_CASES ? NUM_SHARDS : NUM_CASES ))
 
-echo "cases: $NUM_CASES  shards: $SHARDS  concurrent: $MAX_CONCURRENT  list: $CASES_FILE"
+echo "stage: $STAGE  cases: $NUM_CASES  shards: $SHARDS  concurrent: $MAX_CONCURRENT  list: $CASES_FILE"
 
 ARRAY_JOB="$(sbatch --parsable \
     --account="$SLURM_ACCOUNT" \
@@ -51,7 +63,8 @@ ARRAY_JOB="$(sbatch --parsable \
     --mem="$TASK_MEM" \
     --cpus-per-task="$TASK_CPUS" \
     --output="$LOG_DIR/%x_%A_%a.out" \
-    --export="ALL,REPO_DIR=$REPO_DIR,CASES_FILE=$CASES_FILE,NUM_SHARDS=$SHARDS" \
+    --job-name="aneug-$STAGE" \
+    --export="ALL,REPO_DIR=$REPO_DIR,CASES_FILE=$CASES_FILE,NUM_SHARDS=$SHARDS,STAGE=$STAGE" \
     "$REPO_DIR/scripts/msi/preprocess_array.sbatch" "$@")"
 echo "submitted array job $ARRAY_JOB"
 

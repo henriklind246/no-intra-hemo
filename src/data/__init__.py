@@ -5,6 +5,7 @@ Pipeline, one ``aneug`` subcommand per step (see cli.py):
     inspect  inspect_raw.py  describe one raw case's files, read-only
     convert  convert.py      blood_data.pt -> coordinates.npy, solution.npy, metadata.json
     verify   convert.py      re-check processed cases against the raw data
+    features geometry.py     wall distance and volume geodesics -> geometry_features.npy
     index    processed.py    summarize what has been processed and what failed
 
 Supporting modules:
@@ -14,17 +15,21 @@ Supporting modules:
     provenance.py  code/environment record stored in each case's metadata
 
 Public API for training code: ``ProcessedCase`` (memory-mapped arrays and
-metadata of one case), ``list_cases`` and ``pooled_solution_stats``.
+metadata of one case), ``list_cases``, ``pooled_solution_stats`` and
+``pooled_geometry_stats``.
 """
 
 from .layout import FORMAT_VERSION, SOLUTION_FIELDS, default_root
-from .processed import ProcessedCase, list_cases, pooled_solution_stats
+from .geometry import FEATURE_CHANNELS
+from .processed import ProcessedCase, list_cases, pooled_geometry_stats, pooled_solution_stats
 
 __all__ = [
+    "FEATURE_CHANNELS",
     "FORMAT_VERSION",
     "SOLUTION_FIELDS",
     "ProcessedCase",
     "default_root",
     "list_cases",
+    "pooled_geometry_stats",
     "pooled_solution_stats",
 ]
