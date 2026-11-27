@@ -21,6 +21,11 @@ Commands:
     split    split the processed cases into train/val/test by geometry
              (whole cases, never snapshots) and write
              processed_data/splits/<name>.json with the training statistics
+    normalization
+             write the operator's normalization constants for a split
+             (from its training cases) to splits/<name>.normalization.json
+    outlets  measure the flow through each outlet cap and report which
+             flowsplit_ratio.txt value belongs to which outlet node type
 
 Paths: --root (default $ANEUG_ROOT, else /scratch.global/$USER/aneug_flow)
 holds transient_data/ and processed_data/; --raw-dir and --out-dir override
@@ -42,7 +47,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import convert, geometry, layout, manifest, processed, raw, splits
+from . import convert, geometry, layout, manifest, normalize, outlets, processed, raw, splits
 
 log = logging.getLogger("aneug")
 
@@ -219,6 +224,50 @@ def cmd_split(args) -> int:
     return 0
 
 
+def cmd_normalization(args) -> int:
+    _, out_dir = _paths(args)
+    split_file = Path(args.split)
+    split = splits.Split.load(split_file)
+    path = Path(args.output) if args.output else normalize.normalization_path(split_file)
+    if path.exists() and not args.overwrite:
+        log.error("%s exists (use --overwrite)", path)
+        return 1
+    try:
+        norm = normalize.Normalization.from_split(split, out_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("%s", exc)
+        return 1
+    norm.save(path)
+    doc = norm.to_dict()
+    _print_json({"normalization": str(path), **{k: doc[k] for k in (
+        "coordinate_scale", "geometry_channels", "geometry_scale", "velocity_scale", "pressure_reference",
+        "pressure_scale", "flow_split_mean", "flow_split_std")}})
+    return 0
+
+
+def cmd_outlets(args) -> int:
+    _, out_dir = _paths(args)
+    ids = args.cases or [c for c in processed.list_cases(out_dir) if layout.has_geometry(out_dir / c)]
+    rows, failed = [], 0
+    for i, cid in enumerate(ids, 1):
+        try:
+            rows.append(outlets.outlet_report(processed.ProcessedCase(out_dir / cid)))
+        except Exception as exc:
+            failed += 1
+            log.error("[%d/%d] %s FAILED: %s: %s", i, len(ids), cid, type(exc).__name__, exc)
+            continue
+        r = rows[-1]
+        log.info("[%d/%d] %s measured %.3f/%.3f, file %s -> %s (balance %.3f)", i, len(ids), cid,
+                 r["measured_fraction_outlet3"], r["measured_fraction_outlet4"], r["file_flow_split"],
+                 r["verdict"], r["balance"])
+    if not rows:
+        return 1
+    path = Path(args.output) if args.output else out_dir / "outlets.csv"
+    outlets.write_report(rows, path)
+    _print_json({"report": str(path), **outlets.summarize(rows)})
+    return 1 if failed else 0
+
+
 # --- parser ----------------------------------------------------------------
 
 
@@ -279,6 +328,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-o", "--output", help="write here instead of <out-dir>/splits/<name>.json")
     s.add_argument("--overwrite", action="store_true", help="replace an existing split file")
     s.set_defaults(func=cmd_split)
+
+    s = sub.add_parser("normalization", parents=[common],
+                       help="normalization constants for the operator, from a split's training cases")
+    s.add_argument("--split", default="splits/default.json", help="split file (default splits/default.json)")
+    s.add_argument("-o", "--output", help="default: next to the split, <name>.normalization.json")
+    s.add_argument("--overwrite", action="store_true")
+    s.set_defaults(func=cmd_normalization)
+
+    s = sub.add_parser("outlets", parents=[common],
+                       help="match flowsplit_ratio.txt values to outlet node types from the measured flow")
+    s.add_argument("cases", nargs="*", help="case ids (default: every case with geometry features)")
+    s.add_argument("-o", "--output", help="report CSV (default: <out-dir>/outlets.csv)")
+    s.set_defaults(func=cmd_outlets)
 
     s = sub.add_parser("index", parents=[common], help="write index.csv and report progress")
     s.set_defaults(func=cmd_index)

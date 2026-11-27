@@ -30,7 +30,9 @@ aneug_flow/
     ├── _failures/<case>.json  error + traceback for cases that failed
     ├── _failures/features/    the same for `aneug features`
     ├── _jobs/                 frozen case lists of submitted array jobs
-    └── splits/<name>.json     train/val/test case ids + training statistics (`aneug split`)
+    ├── splits/<name>.json     train/val/test case ids + training statistics (`aneug split`)
+    ├── splits/<name>.normalization.json   operator normalization constants (`aneug normalization`)
+    └── outlets.csv            measured outlet flow fractions vs flowsplit_ratio.txt (`aneug outlets`)
 ```
 
 `metadata.json` records the case id, N and T, the flow split exactly as stored
@@ -137,8 +139,8 @@ uses the first four; the aneurysm distance is extra.
 
 `aneug split` splits by geometry: the unit is the case, so all 80 snapshots of
 a geometry land in the same part and no snapshot of a test geometry is ever
-seen in training. The default is 80/10/10 with seed 0. That gives 507/63/64
-for 634 cases; the exact counts depend on how many cases are eligible.
+seen in training. The default is 80/10/10 with seed 0. For the 634 cases
+that is 508/63/63 (`splits/default.json`, committed).
 
 - **Which cases.** Every case with a complete conversion and geometry
   features, minus an optional `--exclude-file`. Cases left out are listed
@@ -164,6 +166,73 @@ split = Split.load("splits/default.json")
 train = split.cases(root, "train")       # list of ProcessedCase
 val_ids = split.ids("val")
 stats = split.train_stats["solution"]    # training-only mean/std/min/max
+```
+
+## Operator inputs, normalization and loading
+
+The operator maps, for one geometry, per-point inputs plus two global inputs
+to the flow at that time:
+
+| | inputs | shape |
+|---|---|---|
+| per point | x, y, z, wall_distance, geodesic_inlet, geodesic_outlet3, geodesic_outlet4, geodesic_aneurysm | (N, 8) |
+| per case | outlet flow split | (2,) |
+| per query | prediction time, as a phase of the cycle in [0, 1) | scalar |
+| **output** | u, v, w, gauge pressure | (N, 4) |
+
+`Normalization` ([src/data/normalize.py](src/data/normalize.py)) takes its
+constants from the split's training cases only:
+
+- **Outputs and distances are scaled, never shifted**, so physical zeros stay
+  zero: no-slip at the wall, zero distance on the wall or a cap, zero gauge
+  pressure at the reference point.
+- **Velocity:** one scale for u, v and w (the RMS component), so vectors keep
+  their direction.
+- **Pressure:** the target is gauge pressure `p - 101325 Pa`, divided by its
+  RMS. The solver pins the pressure at the coordinate origin to the operating
+  pressure (the point nearest the origin stays within 15 Pa of 101325 in
+  every snapshot), so the offset carries no physics. Report errors also with
+  each snapshot's mean removed.
+- **Coordinates:** divided by the largest absolute training coordinate, which
+  keeps the frame and puts the origin (the pressure reference) at zero.
+- **Geometry features:** each divided by its own RMS.
+- **Flow split:** each value standardized over the training cases.
+- **Time:** snapshot `k` of `T` is phase `k / T`, which assumes evenly spaced
+  snapshots over one cycle (the dataset has no physical times).
+  `periodic_time_features` gives sin/cos harmonics.
+
+The flow split is used in `flowsplit_ratio.txt` order, assumed to be (node
+type 3, node type 4) to match the outlet geodesic channels. `aneug outlets`
+measures the flow leaving each outlet cap and reports per case whether the
+file order fits, so this can be checked before training.
+
+Two map-style datasets ([src/data/dataset.py](src/data/dataset.py)) read only
+what they need from the memory maps and work with a PyTorch `DataLoader`:
+
+- `SampledPoints` for training: item `i` is one (case, snapshot) pair with a
+  fresh random subset of `points` points; an epoch visits every pair once.
+  `snapshots=s` adds s - 1 other snapshots at the same points. Call
+  `set_epoch(e)` each epoch for new points.
+- `FullField` for evaluation: every point of every snapshot, in contiguous
+  chunks; use `batch_size=None`.
+
+```python
+from torch.utils.data import DataLoader
+from src.data import FullField, Normalization, SampledPoints, Split
+
+root = "/scratch.global/lind1775/aneug_flow/processed_data"
+split = Split.load("splits/default.json")
+norm = Normalization.load("splits/default.normalization.json")
+train = SampledPoints(split, "train", root, norm, points=16384)
+loader = DataLoader(train, batch_size=8, shuffle=True, num_workers=4)
+for epoch in range(epochs):
+    train.set_epoch(epoch)
+    for b in loader:
+        # b["inputs"] (B, K, 8), b["flow_split"] (B, 2), b["time"] (B, 1), b["targets"] (B, 1, K, 4)
+        ...
+val = FullField(split, "val", root, norm, chunk=65536)
+for c in DataLoader(val, batch_size=None):
+    pred_si = norm.physical(model(c).numpy())   # m/s and gauge Pa
 ```
 
 ## Running on MSI
@@ -250,6 +319,20 @@ and can be overridden from the environment.
    ```bash
    scripts/msi/run.sh split
    ```
+
+10. Write the normalization constants for the committed split, and check
+    which flow-split value belongs to which outlet (about 1 to 2 s per case,
+    so use an interactive session for the full run):
+
+    ```bash
+    scripts/msi/run.sh normalization --split splits/default.json
+    ```
+
+    ```bash
+    scripts/msi/run.sh outlets
+    ```
+
+    Commit `splits/default.normalization.json`.
 
 **Storage:** `/scratch.global` is purged after 30 days and not backed up. The
 processed set is roughly 19% of the raw `blood_data.pt` size (about 440 GB if
