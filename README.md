@@ -29,7 +29,8 @@ aneug_flow/
     ├── raw_manifest.csv       inventory of the raw cases (from `aneug scan`)
     ├── _failures/<case>.json  error + traceback for cases that failed
     ├── _failures/features/    the same for `aneug features`
-    └── _jobs/                 frozen case lists of submitted array jobs
+    ├── _jobs/                 frozen case lists of submitted array jobs
+    └── splits/<name>.json     train/val/test case ids + training statistics (`aneug split`)
 ```
 
 `metadata.json` records the case id, N and T, the flow split exactly as stored
@@ -123,6 +124,39 @@ uses the first four; the aneurysm distance is extra.
     the fluid-facing normals stored in `wall/wall_mesh.npz`, Laplacian
     eigenvectors, or wall shear.
 
+## Train/validation/test split
+
+`aneug split` splits by geometry: the unit is the case, so all 80 snapshots of
+a geometry land in the same part and no snapshot of a test geometry is ever
+seen in training. The default is 80/10/10 with seed 0. That gives 507/63/64
+for 634 cases; the exact counts depend on how many cases are eligible.
+
+- **Which cases.** Every case with a complete conversion and geometry
+  features, minus an optional `--exclude-file`. Cases left out are listed
+  with the reason.
+- **Reproducible.** The assignment depends only on the set of eligible case
+  ids and the seed. The file is never overwritten without `--overwrite`.
+- **Related geometries.** If some cases share a parent vessel, pass
+  `--groups-file` (CSV with `case_id,group`) and each group stays in one part.
+- **Training statistics.** The file also stores exact per-channel statistics
+  of the solution and the geometry features over the training cases only,
+  ready for the normalization constants.
+
+Keep the split in the repository, since scratch is purged:
+
+```bash
+mkdir -p splits && cp /scratch.global/$USER/aneug_flow/processed_data/splits/default.json splits/
+```
+
+```python
+from src.data import Split
+
+split = Split.load("splits/default.json")
+train = split.cases(root, "train")       # list of ProcessedCase
+val_ids = split.ids("val")
+stats = split.train_stats["solution"]    # training-only mean/std/min/max
+```
+
 ## Running on MSI
 
 Everything runs from a clone of this repo using the `tps` conda env; no
@@ -201,6 +235,12 @@ and can be overridden from the environment.
    The case list defaults to every processed case. `run.sh index` then
    reports `num_with_geometry`, `geometry_failed` and
    `geometry_with_warnings`.
+
+9. Make the split once the features are done:
+
+   ```bash
+   scripts/msi/run.sh split
+   ```
 
 **Storage:** `/scratch.global` is purged after 30 days and not backed up. The
 processed set is roughly 19% of the raw `blood_data.pt` size (about 440 GB if

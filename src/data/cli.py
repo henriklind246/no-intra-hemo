@@ -18,6 +18,9 @@ Commands:
              means every processed case. Failures go to _failures/features/
     index    write index.csv and report complete, failed, incomplete and
              not-yet-processed cases
+    split    split the processed cases into train/val/test by geometry
+             (whole cases, never snapshots) and write
+             processed_data/splits/<name>.json with the training statistics
 
 Paths: --root (default $ANEUG_ROOT, else /scratch.global/$USER/aneug_flow)
 holds transient_data/ and processed_data/; --raw-dir and --out-dir override
@@ -39,7 +42,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import convert, geometry, layout, manifest, processed, raw
+from . import convert, geometry, layout, manifest, processed, raw, splits
 
 log = logging.getLogger("aneug")
 
@@ -193,6 +196,29 @@ def cmd_index(args) -> int:
     return 1 if summary["failed"] or summary["geometry_failed"] else 0
 
 
+def cmd_split(args) -> int:
+    _, out_dir = _paths(args)
+    groups = splits.read_groups(Path(args.groups_file)) if args.groups_file else None
+    exclude = manifest.read_case_list(Path(args.exclude_file)) if args.exclude_file else []
+    try:
+        path = splits.create_split(
+            out_dir, args.name, val=args.val, test=args.test, seed=args.seed, groups=groups,
+            exclude=exclude, require_geometry=not args.allow_missing_geometry,
+            output=args.output, overwrite=args.overwrite,
+        )
+    except (FileExistsError, ValueError) as exc:
+        log.error("%s", exc)
+        return 1
+    doc = splits.Split.load(path).document
+    _print_json({
+        "split": str(path),
+        "counts": doc["counts"],
+        "excluded": doc["excluded"],
+        "exclusions_not_found": doc["exclusions_not_found"],
+    })
+    return 0
+
+
 # --- parser ----------------------------------------------------------------
 
 
@@ -240,6 +266,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--overwrite", action="store_true", help="recompute cases that already have features")
     s.add_argument("--fail-fast", action="store_true", help="stop at the first failing case")
     s.set_defaults(func=cmd_features)
+
+    s = sub.add_parser("split", parents=[common], help="train/val/test split by geometry")
+    s.add_argument("--name", default="default", help="split name (file splits/<name>.json)")
+    s.add_argument("--val", type=float, default=0.1, help="validation fraction (default 0.1)")
+    s.add_argument("--test", type=float, default=0.1, help="test fraction (default 0.1)")
+    s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--groups-file", help="CSV with case_id,group: cases of one group stay in one part")
+    s.add_argument("--exclude-file", help="case ids to leave out (one per line, or a CSV with case_id)")
+    s.add_argument("--allow-missing-geometry", action="store_true",
+                   help="include cases without geometry features")
+    s.add_argument("-o", "--output", help="write here instead of <out-dir>/splits/<name>.json")
+    s.add_argument("--overwrite", action="store_true", help="replace an existing split file")
+    s.set_defaults(func=cmd_split)
 
     s = sub.add_parser("index", parents=[common], help="write index.csv and report progress")
     s.set_defaults(func=cmd_index)
