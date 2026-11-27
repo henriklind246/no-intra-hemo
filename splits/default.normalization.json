@@ -1,0 +1,60 @@
+{
+  "normalization_version": 1,
+  "input_channels": [
+    "x",
+    "y",
+    "z",
+    "wall_distance",
+    "geodesic_inlet",
+    "geodesic_outlet3",
+    "geodesic_outlet4",
+    "geodesic_aneurysm"
+  ],
+  "target_channels": [
+    "u",
+    "v",
+    "w",
+    "gauge_pressure"
+  ],
+  "coordinate_scale": 0.02944142185151577,
+  "geometry_channels": [
+    "wall_distance",
+    "geodesic_inlet",
+    "geodesic_outlet3",
+    "geodesic_outlet4",
+    "geodesic_aneurysm"
+  ],
+  "geometry_scale": [
+    0.0005241953719109597,
+    0.019423751899749944,
+    0.021360997102221255,
+    0.02219822313708859,
+    0.004807696501967873
+  ],
+  "velocity_scale": 0.23435576893978505,
+  "pressure_scale": 406.02794647029543,
+  "flow_split_mean": [
+    0.6056923818165861,
+    0.3943076186527417
+  ],
+  "flow_split_std": [
+    0.07867163014630117,
+    0.07867163102745471
+  ],
+  "pressure_reference": 101325.0,
+  "source": {
+    "split": "default",
+    "eligible_sha256": "9d429278345f0995ea8db4c6bd6a85c20cd53b5cb6bf7d39be209bd136b87a74",
+    "num_train_cases": 508
+  },
+  "provenance": {
+    "package_version": "0.1.0",
+    "git_commit": "647c278de0465c8aad21206619e71d65c91e3238",
+    "git_dirty": false,
+    "created_utc": "2026-11-27T18:09:03+00:00",
+    "host": "ahl02",
+    "python": "3.11.15",
+    "numpy": "2.2.6",
+    "torch": "2.7.0+cu126"
+  }
+}
