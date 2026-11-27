@@ -23,7 +23,8 @@ Commands:
              processed_data/splits/<name>.json with the training statistics
     normalization
              write the operator's normalization constants for a split
-             (from its training cases) to splits/<name>.normalization.json
+             (from its training cases) to splits/<name>.normalization.json,
+             with the cases whose flow split `aneug outlets` found reversed
     outlets  measure the flow through each outlet cap and report which
              flowsplit_ratio.txt value belongs to which outlet node type
 
@@ -232,8 +233,20 @@ def cmd_normalization(args) -> int:
     if path.exists() and not args.overwrite:
         log.error("%s exists (use --overwrite)", path)
         return 1
+    order = {"swapped": [], "unreliable": []}
+    if not args.ignore_outlets:
+        report = Path(args.outlets) if args.outlets else out_dir / "outlets.csv"
+        if not report.is_file():
+            log.error("%s not found: run `aneug outlets` first, or pass --ignore-outlets "
+                      "to use flowsplit_ratio.txt order for every case", report)
+            return 1
+        order = outlets.flow_split_order(report)
+        log.info("flow split: %d case(s) swapped, %d unreliable (from %s)",
+                 len(order["swapped"]), len(order["unreliable"]), report)
     try:
-        norm = normalize.Normalization.from_split(split, out_dir)
+        norm = normalize.Normalization.from_split(
+            split, out_dir, swapped=order["swapped"], unreliable=order["unreliable"],
+            source={"outlets_rule": order.get("rule")} if order.get("rule") else None)
     except (FileNotFoundError, ValueError) as exc:
         log.error("%s", exc)
         return 1
@@ -241,7 +254,8 @@ def cmd_normalization(args) -> int:
     doc = norm.to_dict()
     _print_json({"normalization": str(path), **{k: doc[k] for k in (
         "coordinate_scale", "geometry_channels", "geometry_scale", "velocity_scale", "pressure_reference",
-        "pressure_scale", "flow_split_mean", "flow_split_std")}})
+        "pressure_scale", "flow_split_mean", "flow_split_std", "flow_split_swapped",
+        "flow_split_unreliable")}})
     return 0
 
 
@@ -334,6 +348,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--split", default="splits/default.json", help="split file (default splits/default.json)")
     s.add_argument("-o", "--output", help="default: next to the split, <name>.normalization.json")
     s.add_argument("--overwrite", action="store_true")
+    s.add_argument("--outlets", help="`aneug outlets` report (default: <out-dir>/outlets.csv)")
+    s.add_argument("--ignore-outlets", action="store_true",
+                   help="use flowsplit_ratio.txt order for every case")
     s.set_defaults(func=cmd_normalization)
 
     s = sub.add_parser("outlets", parents=[common],

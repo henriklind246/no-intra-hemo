@@ -35,10 +35,19 @@ split only, and converts both ways. The rules:
   snapshots over one cycle. ``periodic_time_features`` turns phases into
   sin/cos pairs for models that need the periodicity built in.
 
-Flow-split order: the values are used in the order of flowsplit_ratio.txt,
-assumed to be (node type 3, node type 4), i.e. the same order as the
-geodesic_outlet3/4 channels. ``aneug outlets`` checks this against the flow
-actually leaving each outlet.
+Flow-split order: the operator needs the values in outlet order (node type 3,
+node type 4), the order of the geodesic_outlet3/4 channels. flowsplit_ratio.txt
+is in that order for most cases but reversed for some: ``aneug outlets``
+measures the flow leaving each outlet, and the cases it confidently finds
+reversed are stored here (``flow_split_swapped``) and reversed by
+``case_flow_split``, both for the statistics and in the datasets. Cases whose
+measurement failed are listed in ``flow_split_unreliable`` and keep the file
+order.
+
+Inflow: the inlet flow differs between cases (15% spread), but the mean inlet
+velocity does not (2.5%; flow and inlet area correlate 0.99), so the inlet
+condition is one velocity waveform for every case and the inflow follows from
+the geometry. It is therefore not a separate input.
 
 The constants are saved as JSON next to the split (``aneug normalization``)
 and should be committed with it.
@@ -49,10 +58,11 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 import numpy as np
 
+from .layout import natural_key
 from .provenance import provenance
 
 PRESSURE_REFERENCE_PA = 101325.0
@@ -60,7 +70,13 @@ VELOCITY_CHANNELS = ("x_velocity", "y_velocity", "z_velocity")
 PRESSURE_CHANNEL = "absolute_pressure"
 TARGET_CHANNELS = ("u", "v", "w", "gauge_pressure")
 COORDINATE_INPUTS = ("x", "y", "z")
-NORMALIZATION_VERSION = 1
+NORMALIZATION_VERSION = 2
+
+
+def _ordered(values: Optional[Sequence[float]], swap: bool) -> Optional[List[float]]:
+    if values is None:
+        return None
+    return list(values)[::-1] if swap else list(values)
 
 
 def _rms(stats: dict, offset: float = 0.0) -> float:
@@ -88,20 +104,29 @@ class Normalization:
     flow_split_mean: List[float]
     flow_split_std: List[float]
     pressure_reference: float = PRESSURE_REFERENCE_PA
+    flow_split_swapped: List[str] = field(default_factory=list)
+    flow_split_unreliable: List[str] = field(default_factory=list)
     source: dict = field(default_factory=dict)
 
     # --- construction ------------------------------------------------------
 
     @classmethod
-    def from_split(cls, split, out_root: Path) -> "Normalization":
-        """Constants from the training cases of ``split`` (a ``Split``)."""
+    def from_split(cls, split, out_root: Path, *, swapped: Iterable[str] = (),
+                   unreliable: Iterable[str] = (), source: Optional[dict] = None) -> "Normalization":
+        """Constants from the training cases of ``split`` (a ``Split``).
+
+        ``swapped``: cases whose flowsplit_ratio.txt lists the outlets in the
+        reverse order (from ``outlets.flow_split_order``); ``unreliable``:
+        cases where that could not be measured. Both are kept in the result.
+        """
+        swapped = sorted(set(swapped), key=natural_key)
         cases = split.cases(out_root, "train")
         stats = split.train_stats
         sol, geo = stats["solution"], stats["geometry"]
 
         coord = max(float(np.abs(np.r_[c.metadata["coordinate_bbox"]["min"],
                                        c.metadata["coordinate_bbox"]["max"]]).max()) for c in cases)
-        splits = [c.flow_split for c in cases]
+        splits = [_ordered(c.flow_split, c.case_id in swapped) for c in cases]
         if any(s is None for s in splits):
             missing = [c.case_id for c, s in zip(cases, splits) if s is None]
             raise ValueError(f"{len(missing)} training case(s) have no flow split, e.g. {missing[:3]}")
@@ -121,8 +146,10 @@ class Normalization:
             flow_split_mean=fs.mean(axis=0).tolist(),
             # A split that never varies would divide by zero; leave it unscaled.
             flow_split_std=np.where(fs_std > 1e-12, fs_std, 1.0).tolist(),
+            flow_split_swapped=swapped,
+            flow_split_unreliable=sorted(set(unreliable), key=natural_key),
             source={"split": split.name, "eligible_sha256": split.document.get("eligible_sha256"),
-                    "num_train_cases": len(cases)},
+                    "num_train_cases": len(cases), **(source or {})},
         )
 
     # --- inputs ------------------------------------------------------------
@@ -140,6 +167,10 @@ class Normalization:
         x = np.asarray(coordinates, dtype=np.float32) / np.float32(self.coordinate_scale)
         g = np.asarray(geometry_features, dtype=np.float32) / np.asarray(self.geometry_scale, dtype=np.float32)
         return np.concatenate([x, g], axis=-1)
+
+    def case_flow_split(self, case) -> Optional[List[float]]:
+        """A case's flow split in outlet order (node type 3, node type 4), not normalized."""
+        return _ordered(case.flow_split, case.case_id in self.flow_split_swapped)
 
     def flow_split(self, values: Sequence[float]) -> np.ndarray:
         v = np.asarray(values, dtype=np.float64)

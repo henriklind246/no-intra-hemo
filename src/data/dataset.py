@@ -22,7 +22,7 @@ per (case, snapshot) with the ``case``, ``snapshots`` and ``points`` keys.
 
 Both return, for K points and s snapshots:
     inputs      (K, 8)    x, y, z and the 5 geometry features, normalized
-    flow_split  (S,)      the case's outlet flow split, normalized
+    flow_split  (S,)      the case's flow split in outlet order (type 3, type 4), normalized
     time        (s,)      prediction time as a phase of the cycle in [0, 1)
     targets     (s, K, 4) u, v, w, gauge pressure, normalized
     case        ()        index into ``dataset.case_ids``
@@ -70,10 +70,10 @@ class _CaseDataset:
             if c.geometry_channels != normalization.geometry_channels:
                 raise ValueError(f"{c.case_id}: geometry channels {c.geometry_channels} differ from the "
                                  f"normalization's {normalization.geometry_channels}")
-            if c.flow_split is None:
+            fs = normalization.case_flow_split(c)  # outlet order
+            if fs is None:
                 raise ValueError(f"{c.case_id}: no flow split")
-            self.cases.append(_CaseInfo(c.case_id, c.num_points, c.num_snapshots,
-                                        normalization.flow_split(c.flow_split)))
+            self.cases.append(_CaseInfo(c.case_id, c.num_points, c.num_snapshots, normalization.flow_split(fs)))
         self._open: "OrderedDict[int, ProcessedCase]" = OrderedDict()
 
     def _case(self, i: int) -> ProcessedCase:

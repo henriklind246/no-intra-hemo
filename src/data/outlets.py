@@ -19,6 +19,17 @@ Per case the report gives the measured fraction leaving through each outlet,
 averaged over the snapshots, the file's values, and which order fits:
 ``file order`` (first value = node type 3), ``swapped``, or ``ambiguous``
 when the two values are too close to tell.
+
+That verdict only says which order is closer, which near a 50/50 split is
+decided by the 2-6% measurement error. ``decide`` is the rule actually used
+for the operator's input (``flow_split_order``):
+    unreliable  the measurement fits neither order (error above 0.1 in both);
+                the file order is kept
+    swap        the measured fraction and the file's first value lie on
+                opposite sides of 0.5, each at least 0.05 away from it
+    keep        everything else (where the two values are within 0.05 of
+                0.5, which order is used hardly matters)
+On the full dataset (2026-11-27): 14 swaps, 8 unreliable.
 """
 
 from __future__ import annotations
@@ -34,6 +45,8 @@ from .processed import ProcessedCase
 CAPS = ("geodesic_inlet", "geodesic_outlet3", "geodesic_outlet4")
 GRID_CELLS_PER_RADIUS = 8
 AMBIGUOUS = 0.02  # file values closer than this cannot be told apart
+SWAP_MARGIN = 0.05  # both fractions at least this far from 0.5 to swap
+UNRELIABLE_ERROR = 0.1  # measurement fits neither order
 
 
 def cap_flow(case: ProcessedCase, snapshots: Optional[Iterable[int]] = None) -> Dict[str, np.ndarray]:
@@ -77,7 +90,33 @@ def cap_flow(case: ProcessedCase, snapshots: Optional[Iterable[int]] = None) -> 
             q.append((np.bincount(cell_sorted, weights=un) / counts).mean() * np.pi * r**2)
         out[name] = np.asarray(q)
     out["snapshots"] = np.asarray(snapshots)
+    out["inlet_area"] = np.pi * float(sources["geodesic_inlet"]["radius"]) ** 2
     return out
+
+
+def decide(measured_fraction_outlet3: float, file_split: List[float]) -> str:
+    """``keep``, ``swap`` or ``unreliable`` for one case (see the module docstring)."""
+    if len(file_split) != 2 or not np.isfinite(measured_fraction_outlet3):
+        return "unreliable"
+    f3, a = measured_fraction_outlet3, file_split[0]
+    if min(abs(f3 - a), abs(f3 - file_split[1])) > UNRELIABLE_ERROR:
+        return "unreliable"
+    if (f3 - 0.5) * (a - 0.5) < 0 and abs(f3 - 0.5) >= SWAP_MARGIN and abs(a - 0.5) >= SWAP_MARGIN:
+        return "swap"
+    return "keep"
+
+
+def flow_split_order(report: Path) -> dict:
+    """Swapped and unreliable case ids from an ``aneug outlets`` report CSV."""
+    with open(report, newline="") as f:
+        rows = list(csv.DictReader(f))
+    out: Dict[str, List[str]] = {"swap": [], "unreliable": [], "keep": []}
+    for r in rows:
+        fs = [float(v) for v in r["file_flow_split"].split()]
+        out[decide(float(r["measured_fraction_outlet3"]), fs)].append(r["case_id"])
+    return {"swapped": out["swap"], "unreliable": out["unreliable"], "num_cases": len(rows),
+            "rule": f"swap if measured and file fractions lie on opposite sides of 0.5, each >= {SWAP_MARGIN} "
+                    f"away; unreliable if the error exceeds {UNRELIABLE_ERROR} in both orders"}
 
 
 def outlet_report(case: ProcessedCase, snapshots: Optional[Iterable[int]] = None) -> dict:
@@ -96,6 +135,8 @@ def outlet_report(case: ProcessedCase, snapshots: Optional[Iterable[int]] = None
         "inlet_flow_mean_m3s": float(q_in),
         "inlet_flow_max_m3s": float(q["geodesic_inlet"].max()),
         "inlet_flow_argmax_snapshot": int(q["snapshots"][np.argmax(q["geodesic_inlet"])]),
+        "inlet_mean_velocity_ms": float(q_in / q["inlet_area"]),
+        "decision": decide(float(f3), list(fs)),
     }
     if len(fs) == 2:
         err_file, err_swap = abs(f3 - fs[0]), abs(f3 - fs[1])
@@ -121,14 +162,20 @@ def write_report(rows: List[dict], path: Path) -> None:
 
 def summarize(rows: List[dict]) -> dict:
     verdicts: Dict[str, int] = {}
+    decisions: Dict[str, int] = {}
     for r in rows:
         verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+        decisions[r["decision"]] = decisions.get(r["decision"], 0) + 1
     bal = np.array([r["balance"] for r in rows], dtype=np.float64)
     e = np.array([min(r.get("error_file_order", np.nan), r.get("error_swapped", np.nan)) for r in rows])
     q = np.array([r["inlet_flow_mean_m3s"] for r in rows])
+    v = np.array([r["inlet_mean_velocity_ms"] for r in rows])
     return {
         "cases": len(rows),
         "verdicts": verdicts,
+        "decisions": decisions,
+        "inlet_mean_velocity_cv": float(v.std() / v.mean()),
+        "inlet_flow_cv": float(q.std() / q.mean()),
         "balance_median": float(np.nanmedian(bal)),
         "balance_p05_p95": [float(np.nanpercentile(bal, 5)), float(np.nanpercentile(bal, 95))],
         "best_order_error_median": float(np.nanmedian(e)) if np.isfinite(e).any() else None,

@@ -201,10 +201,26 @@ constants from the split's training cases only:
   snapshots over one cycle (the dataset has no physical times).
   `periodic_time_features` gives sin/cos harmonics.
 
-The flow split is used in `flowsplit_ratio.txt` order, assumed to be (node
-type 3, node type 4) to match the outlet geodesic channels. `aneug outlets`
-measures the flow leaving each outlet cap and reports per case whether the
-file order fits, so this can be checked before training.
+**Flow-split order.** The operator needs the split in outlet order (node
+type 3, node type 4), matching the outlet geodesic channels.
+`flowsplit_ratio.txt` has no documented order. `aneug outlets` measures the
+flow leaving each outlet cap; on the full dataset the measured fractions match
+the file within 0.02 (median) and inflow matches outflow within 6%.
+
+- The file is in outlet order for most cases.
+- 14 cases are confidently reversed: the measured and file fractions lie on
+  opposite sides of 0.5, each at least 0.05 away from it.
+- 8 cases have an unreliable measurement and keep the file order.
+
+`aneug normalization` reads the report and stores both lists in the
+normalization file. `Normalization.case_flow_split` and the datasets then
+reverse the swapped cases, so nothing else needs to know about it.
+
+**Inflow is not a separate input.** The inlet flow differs between cases
+(15% spread), but the mean inlet velocity is the same, 0.39 m/s (2.5% spread;
+flow and inlet area correlate 0.99), and it peaks at snapshot 12 in every
+case. So every case has the same inlet velocity waveform, and the inflow
+follows from the geometry.
 
 Two map-style datasets ([src/data/dataset.py](src/data/dataset.py)) read only
 what they need from the memory maps and work with a PyTorch `DataLoader`:
@@ -320,16 +336,16 @@ and can be overridden from the environment.
    scripts/msi/run.sh split
    ```
 
-10. Write the normalization constants for the committed split, and check
-    which flow-split value belongs to which outlet (about 1 to 2 s per case,
-    so use an interactive session for the full run):
-
-    ```bash
-    scripts/msi/run.sh normalization --split splits/default.json
-    ```
+10. Measure which flow-split value belongs to which outlet (about 1 s per
+    case, so use an interactive session), then write the normalization
+    constants for the committed split, which read that report:
 
     ```bash
     scripts/msi/run.sh outlets
+    ```
+
+    ```bash
+    scripts/msi/run.sh normalization --split splits/default.json
     ```
 
     Commit `splits/default.normalization.json`.

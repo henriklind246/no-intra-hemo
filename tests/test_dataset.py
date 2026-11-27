@@ -17,7 +17,7 @@ from src.data import cli, splits
 from src.data.dataset import FullField, SampledPoints
 from src.data.normalize import (PRESSURE_REFERENCE_PA, Normalization, normalization_path,
                                 periodic_time_features)
-from src.data.outlets import cap_flow, outlet_report, summarize
+from src.data.outlets import cap_flow, decide, flow_split_order, outlet_report, summarize, write_report
 from src.data.processed import ProcessedCase
 
 from conftest import torch, write_case
@@ -150,15 +150,51 @@ def test_dataset_rejects_other_geometry_channels(featured):
         SampledPoints(split, "train", out, norm)
 
 
+def test_swapped_flow_split_is_reversed_everywhere(featured):
+    out, split, _ = featured
+    (train,) = split.ids("train")
+    (test,) = split.ids("test")
+    plain = Normalization.from_split(split, out)
+    norm = Normalization.from_split(split, out, swapped=[train, test], unreliable=["stable_99"])
+    c = ProcessedCase(out / train)
+    assert norm.case_flow_split(c) == c.flow_split[::-1] and plain.case_flow_split(c) == c.flow_split
+    assert norm.flow_split_mean == pytest.approx(plain.flow_split_mean[::-1])
+    assert norm.flow_split_unreliable == ["stable_99"]
+    assert Normalization.load(norm.save(out / "n.json")).flow_split_swapped == sorted([train, test])
+    t = ProcessedCase(out / test)
+    item = FullField(split, "test", out, norm, chunk=10_000)[0]
+    assert np.allclose(item["flow_split"], norm.flow_split(t.flow_split[::-1]))
+
+
+def test_decide_rule():
+    assert decide(0.60, [0.40, 0.60]) == "swap"
+    assert decide(0.60, [0.60, 0.40]) == "keep"
+    assert decide(0.52, [0.47, 0.53]) == "keep"  # too close to 0.5 to swap
+    assert decide(0.56, [0.45, 0.55]) == "keep"  # file value within the margin
+    assert decide(0.93, [0.71, 0.29]) == "unreliable"
+    assert decide(float("nan"), [0.4, 0.6]) == "unreliable"
+
+
+def write_outlets_csv(path, rows):
+    write_report([{"case_id": c, "measured_fraction_outlet3": f3, "file_flow_split": f"{a} {1 - a}"}
+                  for c, f3, a in rows], path)
+
+
 def test_normalization_command(featured, capsys):
-    out, _, split_path = featured
+    out, split, split_path = featured
     args = ["normalization", "--out-dir", str(out), "--split", str(split_path)]
+    assert cli.main(args) == 1  # no outlets report yet
+    (train,) = split.ids("train")
+    write_outlets_csv(out / "outlets.csv", [(train, 0.62, 0.4), ("stable_1", 0.93, 0.7)])
+    assert flow_split_order(out / "outlets.csv")["swapped"] == [train]
     assert cli.main(args) == 0
     path = normalization_path(split_path)
     assert path.name == "default.normalization.json" and path.is_file()
-    Normalization.load(path)
+    norm = Normalization.load(path)
+    assert norm.flow_split_swapped == [train] and norm.flow_split_unreliable == ["stable_1"]
     assert cli.main(args) == 1  # exists
-    assert cli.main(args + ["--overwrite"]) == 0
+    assert cli.main(args + ["--overwrite", "--ignore-outlets"]) == 0
+    assert Normalization.load(path).flow_split_swapped == []
 
 
 # --- outlet flow -------------------------------------------------------------
@@ -211,8 +247,9 @@ def test_cap_flow_measures_known_flows():
     row = outlet_report(case)
     assert row["measured_fraction_outlet3"] == pytest.approx(0.3, abs=0.01)
     assert row["balance"] == pytest.approx(1.0, abs=0.03)
-    assert row["verdict"] == "swapped"
+    assert row["verdict"] == "swapped" and row["decision"] == "swap"
+    assert row["inlet_mean_velocity_ms"] == pytest.approx(1.0, rel=0.02)
     assert outlet_report(three_cap_case(file_split=(0.3, 0.7)))["verdict"] == "file order"
     assert outlet_report(three_cap_case(file_split=(0.5, 0.5)))["verdict"] == "ambiguous"
     s = summarize([row, outlet_report(three_cap_case(file_split=(0.3, 0.7)))])
-    assert s["verdicts"] == {"swapped": 1, "file order": 1}
+    assert s["verdicts"] == {"swapped": 1, "file order": 1} and s["decisions"] == {"swap": 1, "keep": 1}
