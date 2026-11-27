@@ -55,9 +55,12 @@ Checks per case, recorded in geometry.json. These fail the case:
       (so type 2 is not the inlet);
     * a wall-triangle vertex is unreachable from a source on the surface;
     * no volume points lie on a cap, or none have the sac as closest wall;
-    * more than 0.1% of the volume points are not connected to a source
-      (fewer are filled from their nearest connected neighbour, with a
-      warning).
+    * more than 0.1% of the volume points are not connected to a source.
+      Fewer are filled from their nearest connected neighbour (its value plus
+      the distance to it) and counted in ``checks.geodesic_sources``; above
+      0.001% this also gives a warning. A few such points are normal: in
+      almost every case two or three points, apparently just outside the
+      triangulated wall, lose all their edges to the inside/outside test.
 These give warnings only:
     * the recomputed geodesics, normalized by their maximum, correlate below
       0.99 with the dataset's normalized ones, or the best-matching dataset
@@ -134,6 +137,7 @@ CORRELATION_WARN = 0.99
 GRAPH_K = 32             # neighbours per volume point in the geodesic graph (16: ~3.5% longer paths, 32: ~0.6%)
 CROSS_TOL = 1e-7         # m; how far inside a segment a wall hit must be to count
 UNREACHABLE_MAX = 1e-3   # fraction of points the graph may leave unconnected
+UNREACHABLE_WARN = 1e-5  # above this fraction the filled points give a warning
 
 
 @dataclass
@@ -715,7 +719,8 @@ def compute_features(
         if lost.any():
             dd, ii = cKDTree(vol[~lost]).query(vol[lost])
             d[lost] = d[~lost][ii] + dd
-            warnings.append(f"{c}: {lost.sum()} unconnected points took their nearest connected neighbour's value")
+            if lost.mean() > UNREACHABLE_WARN:
+                warnings.append(f"{c}: {lost.sum()} unconnected points took their nearest connected neighbour's value")
         if t != 1:
             cn = np.asarray(info["normal"])
             below = d < np.abs((vol - np.asarray(info["centroid"])) @ cn) - 1e-9
