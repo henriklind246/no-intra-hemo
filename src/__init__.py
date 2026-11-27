@@ -7,8 +7,9 @@ Subpackages:
     data  Conversion of the raw AneuG-Flow transient cases into a compact,
           memory-mapped layout, access to the processed cases, and the
           ``aneug`` command line tool.
-
-Model and training code are not written yet.
+    models  The operators: ``forward(inputs, flow_split, time) -> fields``;
+            for now the pointwise MLP baseline.
+    train   Training, resuming and evaluating runs (``python -m src.train``).
 """
 
 __version__ = "0.1.0"

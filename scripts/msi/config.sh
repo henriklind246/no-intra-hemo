@@ -24,5 +24,16 @@
 : "${TASK_MEM:=16G}"         # mmap load needs far less; 16G covers the largest (~5.7 GB) archive even without mmap
 : "${TASK_CPUS:=2}"
 
+# Slurm settings for training (submit_train.sh): one H100 on msigpu, as in the
+# AhmedML benchmark jobs. Check the partition's time limit and GPUs with
+#   sinfo -p msigpu -o "%P %G %l"
+# (an A100 instead: TRAIN_PARTITION=a100-4 TRAIN_GRES=gpu:a100:1).
+: "${TRAIN_PARTITION:=msigpu}"
+: "${TRAIN_GRES:=gpu:h100:1}"
+: "${TRAIN_TIME:=24:00:00}"
+: "${TRAIN_MEM:=64G}"
+: "${TRAIN_CPUS:=12}"        # DataLoader workers (num_workers, default 8) + main process
+
 export ANEUG_ROOT CONDA_ENV CONDA_MODULE SLURM_ACCOUNT SLURM_PARTITION \
-       NUM_SHARDS MAX_CONCURRENT TASK_TIME TASK_MEM TASK_CPUS
+       NUM_SHARDS MAX_CONCURRENT TASK_TIME TASK_MEM TASK_CPUS \
+       TRAIN_PARTITION TRAIN_GRES TRAIN_TIME TRAIN_MEM TRAIN_CPUS

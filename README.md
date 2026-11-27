@@ -3,10 +3,11 @@
 Neural operators for intracranial aneurysm hemodynamics on the
 [AneuG-Flow](https://huggingface.co/datasets/whding123/AneuG-Flow) transient dataset.
 
-This repository currently holds the preprocessing infrastructure: it converts
-the raw `blood_data.pt` archives on MSI into a compact, memory-mappable layout
-that separates static geometry from the time-dependent solution, and computes
-per-point geometry features from the wall mesh.
+This repository holds the preprocessing infrastructure, which converts the
+raw `blood_data.pt` archives on MSI into a compact, memory-mappable layout
+that separates static geometry from the time-dependent solution and computes
+per-point geometry features from the wall mesh, and the training code with a
+pointwise MLP baseline.
 
 ## Processed layout
 
@@ -251,6 +252,103 @@ for c in DataLoader(val, batch_size=None):
     pred_si = norm.physical(model(c).numpy())   # m/s and gauge Pa
 ```
 
+## Training
+
+`python -m src.train` trains, resumes and evaluates runs
+([src/train/](src/train)); the models are in [src/models/](src/models).
+
+**Baseline: pointwise MLP** ([src/models/mlp.py](src/models/mlp.py)). Every
+point is predicted on its own from its 8 point inputs, the flow split and
+sin/cos harmonics of the phase (4 by default), so all it knows about the
+geometry comes from the distance features. Default: width 256, depth 6,
+GELU, about 335k parameters.
+
+**Time-conditioned LinearNO** ([src/models/linearno.py](src/models/linearno.py),
+[configs/linearno.json](configs/linearno.json)). The chunk-capable LinearNO
+from the AhmedML benchmark at its efficient size (8 blocks, width 256,
+8 heads, MLP ratio 2, key ratio 1). Every point attends to a softmax-weighted
+average over all points of its field, in time linear in the number of points.
+Added for AneuG-Flow:
+
+- **Time and flow-split conditioning:** sin/cos harmonics of the phase and
+  the flow split give a condition vector that scales, shifts and gates every
+  block's LayerNorms and residual branches (adaptive LayerNorm). One
+  modulation layer is shared by all blocks, with a small per-block table, to
+  keep the model small.
+- **Early geometry memory injection (FiLM):** following Xia and
+  Aviles-Rivero, "Do Neural Operators Forget Geometry?" (ICML 2026). A
+  shared pointwise MLP on the original point inputs gives per-point gamma
+  and beta, and after each of the first half of the blocks (0-3 of 8) the
+  hidden state becomes `gamma * x + beta`. Injecting only early avoids the
+  "geometric shortcut" the paper finds with late injection. The geometry
+  encoder does not depend on time. `--injection-blocks n` changes how many
+  blocks, `--no-geometry-injection` turns it off (the plain LinearNO, for
+  comparison).
+
+Both start as identities (zero-initialized modulation, gamma = 1, beta = 0),
+so the untrained model is exactly the original LinearNO. 4.6M parameters
+(3.85M of them the AhmedML backbone, 0.6M conditioning, 0.13M geometry
+encoder).
+Training attends over the sampled points of each item; evaluation attends
+over every point of the field, accumulated chunk by chunk, which gives the
+same result as one pass over all points.
+
+Every model follows the same interface,
+`forward(inputs (B, K, 8), flow_split (B, 2), time (B, s)) -> (B, s, K, 4)`,
+so others can be added to `src.models` and trained with the same loop.
+
+**Training.** A step is `batch_size` (case, snapshot) items of `points`
+random points each, from `SampledPoints` with an `EpochSampler`: 8 x 32768
+for the MLP, 4 x 65536 for LinearNO (more points per item give its attention
+a better estimate of the field). The loss is the MSE of the normalized
+outputs (`--loss huber` is less sensitive to the few cases with extreme
+pressure drops). bfloat16 autocast on GPUs.
+
+| | MLP baseline | LinearNO |
+|---|---|---|
+| optimizer | AdamW, betas (0.9, 0.999), weight decay 1e-4 | the same |
+| schedule | linear warmup (1000 steps) to 1e-3, cosine to 1e-5 | OneCycleLR, max 5e-4, 5% warmup, cosine annealing, no momentum cycling |
+| gradient clipping | 1.0 | 1.0 |
+| steps | 50000 | 50000 |
+
+OneCycleLR has a fixed length, so a LinearNO run can be resumed but not
+extended.
+
+**I/O.** Each item reads a whole snapshot slab (~8 MB), however few points it
+keeps, so an epoch (508 cases x 80 snapshots) reads about 325 GB. The log
+line reports `data wait`: when it is high, raise `points` (nearly free) or
+`num_workers` rather than `batch_size`.
+
+**Validation** runs every `eval_every` steps on full fields of all validation
+cases at snapshots 2, 12 (peak inflow), 22, ..., 72. Metrics
+([src/train/metrics.py](src/train/metrics.py)), per (case, snapshot):
+
+| metric | |
+|---|---|
+| `velocity_rel_l2` | relative L2 error of the velocity vectors |
+| `pressure_rel_l2` | the same for gauge pressure |
+| `pressure_centered_rel_l2` | the same with each field's mean pressure removed |
+| `velocity_mae`, `pressure_mae`, `pressure_centered_rmse` | in m/s and Pa |
+| `score` | mean of the velocity and centered pressure errors; picks `best.pt` |
+
+All points weigh the same (the mesh is finer near the wall, so this is not a
+volume average).
+
+**Run directory** `runs/<name>/`: `config.json`, copies of the split and
+normalization, `metrics.jsonl`, `train.log`, `last.pt`, `best.pt`,
+`status.json`, and `eval_<part>_<checkpoint>.json/.csv` from `evaluate`.
+
+```bash
+python -m src.train train --config configs/mlp_baseline.json            # flags override the file
+python -m src.train train --config configs/linearno.json
+python -m src.train resume runs/mlp_baseline                            # after a time limit
+python -m src.train evaluate runs/mlp_baseline --part test              # all 80 snapshots
+```
+
+On SIGTERM (Slurm sends it 5 minutes before the time limit) the trainer
+finishes the current step, saves `last.pt` and exits with status 75; `resume`
+continues with exactly the batches the run would have seen.
+
 ## Running on MSI
 
 Everything runs from a clone of this repo using the `tps` conda env; no
@@ -349,6 +447,55 @@ and can be overridden from the environment.
     ```
 
     Commit `splits/default.normalization.json`.
+
+11. Train on a GPU. Jobs get one H100 on `msigpu` by default
+    (`TRAIN_PARTITION`, `TRAIN_GRES` in
+    [scripts/msi/config.sh](scripts/msi/config.sh)); check its time limit:
+
+    ```bash
+    sinfo -p msigpu -o "%P %G %l"
+    ```
+
+    A short LinearNO smoke run first (300 steps, validation on 4 cases). Its
+    log gives the throughput, peak GPU memory and an ETA, which scales to the
+    full run:
+
+    ```bash
+    TRAIN_TIME=00:45:00 scripts/msi/submit_train.sh train --config configs/linearno.json --name linearno_smoke --steps 300 --eval-every 150 --eval-max-cases 4 --log-every 20
+    ```
+
+    Then the full runs (each its own job), and after each the test evaluation:
+
+    ```bash
+    scripts/msi/submit_train.sh train --config configs/linearno.json
+    ```
+
+    ```bash
+    scripts/msi/submit_train.sh train --config configs/mlp_baseline.json
+    ```
+
+    ```bash
+    scripts/msi/submit_train.sh evaluate runs/linearno --part test
+    ```
+
+    **Following a run.** `squeue --me` shows the job and its ID. Every
+    `log_every` steps `runs/<name>/train.log` gets a line with step, loss,
+    learning rate, points/s, data wait, epoch, peak GPU memory and ETA (the
+    ETA counts evaluations once the first has run), and every validation a
+    line with its scores; `runs/<name>/metrics.jsonl` has the same as JSON.
+    `logs/slurm/aneug-<command>-<jobid>.out` has the job's own output and any
+    traceback.
+
+    ```bash
+    tail -f runs/linearno/train.log
+    ```
+
+    ```bash
+    srun --jobid <jobid> --overlap nvidia-smi
+    ```
+
+    If a job hits its time limit, it saves `last.pt` 5 minutes before; continue
+    with `scripts/msi/submit_train.sh resume runs/<name>`.
 
 **Storage:** `/scratch.global` is purged after 30 days and not backed up. The
 processed set is roughly 19% of the raw `blood_data.pt` size (about 440 GB if

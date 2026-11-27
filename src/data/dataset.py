@@ -11,9 +11,13 @@ random subset of ``points`` points each time. With ``snapshots > 1`` the item
 also holds that many - 1 other random snapshots of the same case at the same
 points, which reads the geometry once for several times. Reading one item
 costs about one snapshot slab (~8 MB) per snapshot plus the point subset of
-the coordinates and geometry features. Call ``set_epoch`` at the start of
-each epoch so every epoch draws new points; an item's draw depends only on
-(seed, epoch, index), not on the worker that reads it.
+the coordinates and geometry features, whatever ``points`` is, so larger
+point subsets are nearly free. An item's draw depends only on (seed, epoch,
+index), not on the worker that reads it. For step-based training use
+``EpochSampler``, whose keys are (epoch, index) pairs: the epoch then travels
+with each key, which works with persistent DataLoader workers and resumes at
+an exact item. With plain integer indices, ``set_epoch`` sets the epoch (it
+only reaches workers that are started afterwards).
 
 ``FullField`` (evaluation). Every point of every snapshot, in chunks of
 ``chunk`` consecutive points (contiguous reads). Chunks differ in length, so
@@ -57,16 +61,25 @@ class _CaseDataset:
     """Case bookkeeping shared by both datasets: metadata up front, memory maps on demand."""
 
     def __init__(self, split, part: str, out_root: Path, normalization: Normalization, *,
-                 max_open_cases: int = 32):
+                 max_open_cases: int = 32, cases: Optional[Sequence[str]] = None):
         self.out_root = Path(out_root)
         self.part = part
         self.normalization = normalization
         self.max_open_cases = max_open_cases
-        self.case_ids: List[str] = list(split.ids(part))
+        ids = list(split.ids(part))
+        if cases is not None:
+            outside = sorted(set(cases) - set(ids))
+            if outside:
+                raise ValueError(f"not {part} cases of split {split.name!r}: {outside[:5]}")
+            ids = [c for c in ids if c in set(cases)]
+        self.case_ids: List[str] = ids
         if not self.case_ids:
             raise ValueError(f"split {split.name!r} has no {part} cases")
         self.cases: List[_CaseInfo] = []
-        for c in split.cases(self.out_root, part):
+        for cid in self.case_ids:
+            c = ProcessedCase(self.out_root / cid)
+            if not c.has_geometry:
+                raise FileNotFoundError(f"{cid}: no geometry features")
             if c.geometry_channels != normalization.geometry_channels:
                 raise ValueError(f"{c.case_id}: geometry channels {c.geometry_channels} differ from the "
                                  f"normalization's {normalization.geometry_channels}")
@@ -113,8 +126,9 @@ class SampledPoints(_CaseDataset):
     """Random point subsets of every (case, snapshot) pair; for training."""
 
     def __init__(self, split, part: str, out_root: Path, normalization: Normalization, *,
-                 points: int = 16384, snapshots: int = 1, seed: int = 0, max_open_cases: int = 32):
-        super().__init__(split, part, out_root, normalization, max_open_cases=max_open_cases)
+                 points: int = 16384, snapshots: int = 1, seed: int = 0, max_open_cases: int = 32,
+                 cases: Optional[Sequence[str]] = None):
+        super().__init__(split, part, out_root, normalization, max_open_cases=max_open_cases, cases=cases)
         if points < 1 or snapshots < 1:
             raise ValueError("points and snapshots must be at least 1")
         self.points, self.snapshots, self.seed, self.epoch = points, snapshots, seed, 0
@@ -131,11 +145,13 @@ class SampledPoints(_CaseDataset):
     def __len__(self) -> int:
         return len(self.cases) * self.num_snapshots
 
-    def __getitem__(self, index: int) -> Dict[str, np.ndarray]:
+    def __getitem__(self, key) -> Dict[str, np.ndarray]:
+        """``key`` is an index, or an (epoch, index) pair as made by ``EpochSampler``."""
+        epoch, index = (int(key[0]), int(key[1])) if isinstance(key, (tuple, list)) else (self.epoch, key)
         if not 0 <= index < len(self):
             raise IndexError(index)
         i, t = divmod(index, self.num_snapshots)
-        rng = np.random.default_rng([self.seed, self.epoch, index])
+        rng = np.random.default_rng([self.seed, epoch, index])
         n = self.cases[i].num_points
         # Sorted indices read the memory maps front to back.
         pts = np.sort(rng.choice(n, self.points, replace=self.points > n))
@@ -150,8 +166,9 @@ class FullField(_CaseDataset):
     """Every point of every snapshot, in contiguous chunks; for evaluation."""
 
     def __init__(self, split, part: str, out_root: Path, normalization: Normalization, *,
-                 chunk: int = 65536, snapshots: Optional[Sequence[int]] = None, max_open_cases: int = 4):
-        super().__init__(split, part, out_root, normalization, max_open_cases=max_open_cases)
+                 chunk: int = 65536, snapshots: Optional[Sequence[int]] = None, max_open_cases: int = 4,
+                 cases: Optional[Sequence[str]] = None):
+        super().__init__(split, part, out_root, normalization, max_open_cases=max_open_cases, cases=cases)
         if chunk < 1:
             raise ValueError("chunk must be at least 1")
         self.chunk = chunk
@@ -169,3 +186,26 @@ class FullField(_CaseDataset):
     def __getitem__(self, index: int) -> Dict[str, np.ndarray]:
         i, t, s = self._index[index]
         return self._item(i, np.array([t]), slice(s, min(s + self.chunk, self.cases[i].num_points)))
+
+
+class EpochSampler:
+    """Endless shuffled (epoch, index) keys for ``SampledPoints``, for step-based training.
+
+    Each epoch is a fresh permutation of the dataset's indices, from
+    (seed, epoch). ``start`` skips that many keys, so resuming at step ``n``
+    with batch size ``b`` and ``start = n * b`` continues exactly where the
+    interrupted run stopped. Pass it as ``DataLoader(..., sampler=...)``.
+    """
+
+    def __init__(self, num_items: int, *, seed: int = 0, start: int = 0):
+        if num_items < 1:
+            raise ValueError("num_items must be at least 1")
+        self.num_items, self.seed, self.start = num_items, seed, start
+
+    def __iter__(self):
+        epoch, offset = divmod(self.start, self.num_items)
+        while True:
+            order = np.random.default_rng([self.seed, epoch, 1]).permutation(self.num_items)
+            for i in order[offset:]:
+                yield (epoch, int(i))
+            offset, epoch = 0, epoch + 1

@@ -17,6 +17,8 @@ dependencies = [
 raw = ["torch>=1.13"]
 # scipy is needed by `aneug features` (KD-trees, Dijkstra).
 features = ["torch>=1.13", "scipy>=1.5"]
+# torch is needed to train and evaluate the models (src/train, src/models).
+train = ["torch>=1.13"]
 dev = ["pytest>=7", "torch>=1.13", "scipy>=1.5"]
 
 [project.scripts]

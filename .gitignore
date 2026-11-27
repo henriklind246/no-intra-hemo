@@ -221,4 +221,5 @@ __marimo__/
 
 # Project
 logs/
+runs/
 .idea/
