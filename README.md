@@ -108,7 +108,10 @@ uses the first four; the aneurysm distance is extra.
   - `inlet_centroids.csv` is not closest to the type-2 nodes.
 
   A case also fails if no volume points lie on a cap, or if more than 0.1% of
-  the points are cut off from a source.
+  the points are cut off from a source. Fewer cut-off points take their
+  nearest connected neighbour's value. Nearly every case has two or three
+  of them; their count is in `checks.geodesic_sources` and they only give a
+  warning above 0.001% of the points.
 
   It gets a warning if:
   - the recomputed surface geodesics don't line up with the dataset's
@@ -116,6 +119,12 @@ uses the first four; the aneurysm distance is extra.
     column order doesn't fit);
   - the flow split differs between files;
   - the wall triangles aren't consistently wound, or a cap needed a fallback.
+
+  On the full dataset the only warning left is in 26 cases, where the sac
+  geodesic correlates about 0.98 with the dataset's aneurysm distance. Both
+  of its fields (`global_geo_dist` and the registration `geo_dist`) give the
+  same number, so the dataset probably measures from a slightly different
+  set of sac nodes. The labels still match, and the feature is our own.
 - **For later.**
   - `geometry.json` records each boundary's size (`checks.boundaries`), for
     matching flow-split values to outlets.
