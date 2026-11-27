@@ -1,5 +1,5 @@
 {
-  "normalization_version": 1,
+  "normalization_version": 2,
   "input_channels": [
     "x",
     "y",
@@ -34,25 +34,52 @@
   "velocity_scale": 0.23435576893978505,
   "pressure_scale": 406.02794647029543,
   "flow_split_mean": [
-    0.6056923818165861,
-    0.3943076186527417
+    0.6078498937248245,
+    0.3921501067445034
   ],
   "flow_split_std": [
-    0.07867163014630117,
-    0.07867163102745471
+    0.0756868905565609,
+    0.07568689129244838
   ],
   "pressure_reference": 101325.0,
+  "flow_split_swapped": [
+    "stable_145",
+    "stable_154",
+    "stable_155",
+    "stable_174",
+    "stable_210",
+    "stable_263",
+    "stable_4132",
+    "stable_4144",
+    "stable_4167",
+    "stable_4175",
+    "stable_4203",
+    "stable_4279",
+    "stable_4334",
+    "stable_4427"
+  ],
+  "flow_split_unreliable": [
+    "stable_109",
+    "stable_184",
+    "stable_200",
+    "stable_4211",
+    "stable_4265",
+    "stable_4339",
+    "stable_4432",
+    "stable_4464"
+  ],
   "source": {
     "split": "default",
     "eligible_sha256": "9d429278345f0995ea8db4c6bd6a85c20cd53b5cb6bf7d39be209bd136b87a74",
-    "num_train_cases": 508
+    "num_train_cases": 508,
+    "outlets_rule": "swap if measured and file fractions lie on opposite sides of 0.5, each >= 0.05 away; unreliable if the error exceeds 0.1 in both orders"
   },
   "provenance": {
     "package_version": "0.1.0",
-    "git_commit": "647c278de0465c8aad21206619e71d65c91e3238",
+    "git_commit": "51a7e83de85a2d286f165a49efbd706916483840",
     "git_dirty": false,
-    "created_utc": "2026-11-27T18:09:03+00:00",
-    "host": "ahl02",
+    "created_utc": "2026-11-27T18:30:49+00:00",
+    "host": "ahl01",
     "python": "3.11.15",
     "numpy": "2.2.6",
     "torch": "2.7.0+cu126"
